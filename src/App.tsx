@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import type {
   InvoiceData,
   Vendor,
@@ -7,11 +7,13 @@ import type {
   ApprovalState,
   AuditEntry,
   AppStep,
+  UserRole,
 } from './types';
 import { extractInvoiceData } from './services/llm';
 import { fuzzyMatchVendor } from './utils/fuzzyMatch';
 import { determineApprovalLevel } from './utils/approval';
 import { MASTER_VENDOR_LIST, DEFAULT_EXTRACTED_RECORDS } from './constants';
+import { LoginScreen } from './components/LoginScreen';
 import { ApiKeyInput } from './components/ApiKeyInput';
 import { FileUpload } from './components/FileUpload';
 import { FilePreview } from './components/FilePreview';
@@ -19,6 +21,7 @@ import { InvoiceTable } from './components/InvoiceTable';
 import { VendorMatch } from './components/VendorMatch';
 import { VendorManager } from './components/VendorManager';
 import { ExtractedDataTab } from './components/ExtractedDataTab';
+import type { ApprovalAction } from './components/ExtractedDataTab';
 import { ApprovalWorkflow } from './components/ApprovalWorkflow';
 import { AuditLog } from './components/AuditLog';
 import './App.css';
@@ -26,7 +29,15 @@ import './App.css';
 const STEPS = ['upload', 'preview', 'extracted', 'approval'] as const;
 const STEP_LABELS: Record<string, string> = { upload: 'Upload', preview: 'Preview', extracted: 'Review', approval: 'Approve' };
 
+const ROLE_LABELS: Record<UserRole, string> = {
+  manager: '👔 Manager',
+  finance_head: '🏦 Finance Head',
+  employee: '👤 Employee',
+};
+
 function App() {
+  // Auth
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
   // Config
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState<'openai' | 'gemini'>('openai');
@@ -54,15 +65,53 @@ function App() {
   const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
   const [vendorMatch, setVendorMatch] = useState<VendorMatchResult | null>(null);
-  const [approval, setApproval] = useState<ApprovalState | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+
+  // Derived: approval state from current record
+  const approval = useMemo<ApprovalState | null>(() => {
+    if (!currentRecordId) return null;
+    return extractedRecords.find((r) => r.id === currentRecordId)?.approval ?? null;
+  }, [currentRecordId, extractedRecords]);
+
+  // Derived: count of invoices actionable by the current approver role
+  const actionableCount = useMemo(() => {
+    if (!userRole || userRole === 'employee') return extractedRecords.length;
+    return extractedRecords.filter((r) => {
+      const a = r.approval;
+      if (!a || a.level === 'auto') return false;
+      if (userRole === 'manager') return a.status === 'pending';
+      if (userRole === 'finance_head') return a.status === 'pending' || a.status === 'manager_approved';
+      return false;
+    }).length;
+  }, [userRole, extractedRecords]);
 
   const addAuditEntry = useCallback((action: string, details: string) => {
     setAuditLog((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), timestamp: new Date(), action, details },
+      { id: crypto.randomUUID(), timestamp: new Date(), action, details, user: userRole ? ROLE_LABELS[userRole] : undefined },
     ]);
-  }, []);
+  }, [userRole]);
+
+  const handleLogin = useCallback(
+    (role: UserRole) => {
+      setUserRole(role);
+      addAuditEntry('Login', `User logged in as ${ROLE_LABELS[role]}`);
+    },
+    [addAuditEntry]
+  );
+
+  const handleLogout = useCallback(() => {
+    addAuditEntry('Logout', `User (${userRole ? ROLE_LABELS[userRole] : ''}) logged out`);
+    setUserRole(null);
+    setActiveView('extracted');
+    setIsReconfiguring(false);
+    setStep('upload');
+    setSelectedFile(null);
+    setInvoiceData(null);
+    setCurrentRecordId(null);
+    setVendorMatch(null);
+    setError(null);
+  }, [userRole, addAuditEntry]);
 
   const handleApiKeySubmit = useCallback(
     (key: string, prov: 'openai' | 'gemini') => {
@@ -216,8 +265,22 @@ function App() {
 
   const invoiceTotal = invoiceData?.total ?? 0;
 
+  const updateCurrentRecordApproval = useCallback(
+    (updater: (prev: ApprovalState) => ApprovalState) => {
+      if (!currentRecordId) return;
+      setExtractedRecords((prev) =>
+        prev.map((r) =>
+          r.id === currentRecordId && r.approval
+            ? { ...r, approval: updater(r.approval) }
+            : r
+        )
+      );
+    },
+    [currentRecordId]
+  );
+
   const handleProceedToApproval = useCallback(() => {
-    if (!invoiceTotal) return;
+    if (!invoiceTotal || !currentRecordId) return;
     const level = determineApprovalLevel(invoiceTotal);
     const isAuto = level === 'auto';
 
@@ -228,7 +291,9 @@ function App() {
       financeApproved: false,
     };
 
-    setApproval(state);
+    setExtractedRecords((prev) =>
+      prev.map((r) => (r.id === currentRecordId ? { ...r, approval: state } : r))
+    );
     setStep('approval');
 
     if (isAuto) {
@@ -241,13 +306,12 @@ function App() {
           : 'Sent for Manager + Finance Head approval'
       );
     }
-  }, [invoiceTotal, addAuditEntry]);
+  }, [invoiceTotal, currentRecordId, addAuditEntry]);
 
   const handleManagerApprove = useCallback(() => {
     if (!approval) return;
     const isManagerOnly = approval.level === 'manager';
-    setApproval((prev) => {
-      if (!prev) return prev;
+    updateCurrentRecordApproval((prev) => {
       if (isManagerOnly) {
         return { ...prev, managerApproved: true, status: 'approved' as const };
       }
@@ -258,23 +322,56 @@ function App() {
     } else {
       addAuditEntry('Manager Approved', 'Manager approval received, awaiting Finance Head');
     }
-  }, [approval, addAuditEntry]);
+  }, [approval, updateCurrentRecordApproval, addAuditEntry]);
 
   const handleFinanceApprove = useCallback(() => {
-    setApproval((prev) => {
-      if (!prev) return prev;
-      return { ...prev, financeApproved: true, status: 'approved' as const };
-    });
+    updateCurrentRecordApproval((prev) => ({
+      ...prev, financeApproved: true, status: 'approved' as const,
+    }));
     addAuditEntry('Approved', 'Invoice approved by Finance Head (final approval)');
-  }, [addAuditEntry]);
+  }, [updateCurrentRecordApproval, addAuditEntry]);
 
   const handleReject = useCallback(() => {
-    setApproval((prev) => {
-      if (!prev) return prev;
-      return { ...prev, status: 'rejected' as const };
-    });
+    updateCurrentRecordApproval((prev) => ({
+      ...prev, status: 'rejected' as const,
+    }));
     addAuditEntry('Rejected', 'Invoice has been rejected');
-  }, [addAuditEntry]);
+  }, [updateCurrentRecordApproval, addAuditEntry]);
+
+  const handleApproveRecord = useCallback(
+    (id: string, action: ApprovalAction) => {
+      setExtractedRecords((prev) =>
+        prev.map((r) => {
+          if (r.id !== id || !r.approval) return r;
+          const a = r.approval;
+          let updated: typeof a;
+          if (action === 'manager_approve') {
+            updated = {
+              ...a,
+              managerApproved: true,
+              status: a.level === 'manager' ? ('approved' as const) : ('manager_approved' as const),
+            };
+          } else if (action === 'finance_approve') {
+            updated = { ...a, financeApproved: true, status: 'approved' as const };
+          } else {
+            updated = { ...a, status: 'rejected' as const };
+          }
+          return { ...r, approval: updated };
+        })
+      );
+
+      const record = extractedRecords.find((r) => r.id === id);
+      const invoiceNo = record?.data.invoiceNo ?? id;
+      if (action === 'manager_approve') {
+        addAuditEntry('Manager Approved', `Manager approved invoice #${invoiceNo}`);
+      } else if (action === 'finance_approve') {
+        addAuditEntry('Approved', `Finance Head gave final approval for invoice #${invoiceNo}`);
+      } else {
+        addAuditEntry('Rejected', `Invoice #${invoiceNo} rejected`);
+      }
+    },
+    [extractedRecords, addAuditEntry]
+  );
 
   const handleReset = useCallback(() => {
     setStep('upload');
@@ -282,20 +379,33 @@ function App() {
     setInvoiceData(null);
     setCurrentRecordId(null);
     setVendorMatch(null);
-    setApproval(null);
     setError(null);
     addAuditEntry('Reset', 'Started new invoice processing');
   }, [addAuditEntry]);
 
   return (
+    <>
+      {!configured ? (
+        <div className="api-key-screen">
+          <ApiKeyInput onSubmit={handleApiKeySubmit} initialProvider={provider} />
+        </div>
+      ) : !userRole ? (
+        <LoginScreen onLogin={handleLogin} />
+      ) : (
     <div className="app">
       <header className="app-header">
         <h1>🧾 AI Invoice Processor</h1>
         <p>Upload invoices, extract data with AI, match vendors, and manage approvals</p>
+        <div className="user-badge">
+          <span className="user-badge-role">{ROLE_LABELS[userRole]}</span>
+          <button className="btn-logout" onClick={handleLogout}>Logout</button>
+        </div>
         {configured && !isReconfiguring && (
-          <button className="btn-reconfigure" onClick={handleReconfigure}>
-            ⚙️ {provider === 'openai' ? 'OpenAI' : 'Gemini'} · Change API Key
-          </button>
+          <div>
+            <button className="btn-reconfigure" onClick={handleReconfigure}>
+              ⚙️ {provider === 'openai' ? 'OpenAI' : 'Gemini'} · Change API Key
+            </button>
+          </div>
         )}
       </header>
 
@@ -305,9 +415,11 @@ function App() {
             className={`app-nav-item ${activeView === 'extracted' ? 'active' : ''}`}
             onClick={() => setActiveView('extracted')}
           >
-            📋 Extracted Data
-            {extractedRecords.length > 0 && (
-              <span className="app-nav-badge">{extractedRecords.length}</span>
+            {userRole === 'employee' ? '📋 Extracted Data' : '📋 Pending Approvals'}
+            {actionableCount > 0 && (
+              <span className={`app-nav-badge${userRole !== 'employee' ? ' app-nav-badge--urgent' : ''}`}>
+                {actionableCount}
+              </span>
             )}
           </button>
           <button
@@ -316,28 +428,32 @@ function App() {
           >
             🏢 Manage Vendors
           </button>
+          {userRole === 'employee' && (
           <button
             className={`app-nav-item ${activeView === 'invoice' ? 'active' : ''}`}
             onClick={() => setActiveView('invoice')}
           >
             🧾 Process Invoice
           </button>
+          )}
         </nav>
       )}
 
       <div className="app-layout">
         <main className="main-content">
-          {!configured || isReconfiguring ? (
+          {isReconfiguring ? (
             <ApiKeyInput
               onSubmit={handleApiKeySubmit}
               initialProvider={provider}
-              onCancel={configured ? handleCancelReconfigure : undefined}
+              onCancel={handleCancelReconfigure}
             />
           ) : activeView === 'extracted' ? (
             <ExtractedDataTab
               records={extractedRecords}
+              userRole={userRole}
               onUpdate={handleRecordUpdate}
               onDelete={handleRecordDelete}
+              onApproveRecord={handleApproveRecord}
             />
           ) : activeView === 'vendors' ? (
             <VendorManager
@@ -429,6 +545,7 @@ function App() {
                   <ApprovalWorkflow
                     total={invoiceData.total}
                     approval={approval}
+                    userRole={userRole}
                     onManagerApprove={handleManagerApprove}
                     onFinanceApprove={handleFinanceApprove}
                     onReject={handleReject}
@@ -451,6 +568,8 @@ function App() {
         </aside>
       </div>
     </div>
+      )}
+    </>
   );
 }
 

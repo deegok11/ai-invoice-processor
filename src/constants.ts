@@ -1,4 +1,4 @@
-import type { Vendor, ExtractedRecord } from './types';
+import type { Vendor, ExtractedRecord, ApprovalState } from './types';
 
 export const MASTER_VENDOR_LIST: Vendor[] = [
   { id: 'v1',  name: 'Tata Consultancy Services', aliases: ['TCS', 'Tata CS'],        gst: '27AABCT1234C1Z5' },
@@ -29,6 +29,7 @@ export const DEFAULT_EXTRACTED_RECORDS: ExtractedRecord[] = [
       tax: 49950,
       total: 324950,
     },
+    approval: { level: 'manager_finance', status: 'approved', managerApproved: true, financeApproved: true } as ApprovalState,
   },
   {
     id: 'er2',
@@ -45,6 +46,7 @@ export const DEFAULT_EXTRACTED_RECORDS: ExtractedRecord[] = [
       tax: 9540,
       total: 62540,
     },
+    approval: { level: 'manager', status: 'approved', managerApproved: true, financeApproved: false } as ApprovalState,
   },
   {
     id: 'er3',
@@ -62,6 +64,7 @@ export const DEFAULT_EXTRACTED_RECORDS: ExtractedRecord[] = [
       tax: 52380,
       total: 339380,
     },
+    approval: { level: 'manager_finance', status: 'pending', managerApproved: false, financeApproved: false } as ApprovalState,
   },
   {
     id: 'er4',
@@ -79,6 +82,7 @@ export const DEFAULT_EXTRACTED_RECORDS: ExtractedRecord[] = [
       tax: 43290,
       total: 281790,
     },
+    approval: { level: 'manager_finance', status: 'manager_approved', managerApproved: true, financeApproved: false } as ApprovalState,
   },
   {
     id: 'er5',
@@ -95,6 +99,7 @@ export const DEFAULT_EXTRACTED_RECORDS: ExtractedRecord[] = [
       tax: 31500,
       total: 206500,
     },
+    approval: { level: 'manager_finance', status: 'rejected', managerApproved: false, financeApproved: false } as ApprovalState,
   },
 ];
 

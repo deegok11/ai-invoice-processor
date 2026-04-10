@@ -45,6 +45,7 @@ export interface AuditEntry {
   timestamp: Date;
   action: string;
   details: string;
+  user?: string;
 }
 
 export interface ExtractedRecord {
@@ -52,6 +53,9 @@ export interface ExtractedRecord {
   fileName: string;
   extractedAt: Date;
   data: InvoiceData;
+  approval?: ApprovalState;
 }
 
 export type AppStep = 'upload' | 'preview' | 'extracted' | 'matched' | 'approval' | 'complete';
+
+export type UserRole = 'manager' | 'finance_head' | 'employee';

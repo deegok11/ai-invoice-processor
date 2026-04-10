@@ -32,6 +32,7 @@ export function AuditLog({ entries }: AuditLogProps) {
             </div>
             <div className="audit-content">
               <span className="audit-action">{entry.action}</span>
+              {entry.user && <span className="audit-user">{entry.user}</span>}
               <span className="audit-details">{entry.details}</span>
             </div>
           </div>

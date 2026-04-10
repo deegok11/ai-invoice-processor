@@ -1,9 +1,10 @@
-import type { ApprovalState } from '../types';
+import type { ApprovalState, UserRole } from '../types';
 import { formatCurrency } from '../utils/approval';
 
 interface ApprovalWorkflowProps {
   total: number;
   approval: ApprovalState;
+  userRole: UserRole;
   onManagerApprove: () => void;
   onFinanceApprove: () => void;
   onReject: () => void;
@@ -12,11 +13,15 @@ interface ApprovalWorkflowProps {
 export function ApprovalWorkflow({
   total,
   approval,
+  userRole,
   onManagerApprove,
   onFinanceApprove,
   onReject,
 }: ApprovalWorkflowProps) {
   const isTerminal = approval.status === 'approved' || approval.status === 'rejected';
+
+  const canManagerApprove = userRole === 'manager' || userRole === 'finance_head';
+  const canFinanceApprove = userRole === 'finance_head';
 
   return (
     <div className="approval-workflow">
@@ -88,7 +93,13 @@ export function ApprovalWorkflow({
       {/* Action Buttons */}
       {approval.level !== 'auto' && !isTerminal && (
         <div className="approval-actions">
-          {!approval.managerApproved && (
+          {userRole === 'employee' && (
+            <div className="approval-role-notice">
+              You are logged in as a Regular Employee. Only Managers and Finance Heads can approve or reject invoices.
+            </div>
+          )}
+
+          {!approval.managerApproved && canManagerApprove && (
             <button className="btn btn-primary" onClick={onManagerApprove}>
               Manager Approve
             </button>
@@ -97,14 +108,22 @@ export function ApprovalWorkflow({
           {approval.level === 'manager_finance' &&
             approval.managerApproved &&
             !approval.financeApproved && (
+              canFinanceApprove ? (
               <button className="btn btn-primary" onClick={onFinanceApprove}>
                 Finance Head Approve
               </button>
+              ) : (
+                <div className="approval-role-notice">
+                  Awaiting Finance Head approval. Only a Finance Head can perform this action.
+                </div>
+              )
             )}
 
+          {canManagerApprove && (
           <button className="btn btn-danger" onClick={onReject}>
             Reject
           </button>
+          )}
         </div>
       )}
 
